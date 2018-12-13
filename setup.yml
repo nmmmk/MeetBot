@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: MeetBot
+Resources:
+  MainFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: main.handle_event
+      Runtime: python3.6
+      FunctionName: 'MeetBot'
+      CodeUri: "s3://meetbot-bot/src.zip"
+      Description: MeetBot
+      MemorySize: 512
+      Timeout: 10
+      Role: !GetAtt MeetBotIamRole.Arn
+      Events:
+        BucketEvent1:
+          Type: S3
+          Properties:
+            Bucket: !Ref SettingS3Bucket
+            Events: 's3:ObjectCreated:*'
+        Api1:
+          Type: Api
+          Properties:
+            Path: /MeetBot
+            Method: POST
+            RestApiId: !Ref MeetBotApi
+      Environment:
+        Variables:
+          SLACK_BOT_USER_ACCESS_TOKEN: xoxb-abcde
+          SLACK_BOT_VERIFY_TOKEN: fghijklmn
+
+  MeetBotApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: "prd"
+      DefinitionBody:
+        swagger: 2.0
+        info: 
+          version: 1.0.0
+          title: "MeetBot"
+        basePath: "/prd"
+        schemes:
+          - https
+        paths:
+          /MeetBot:
+            post:
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: 200
+                    responseTemplates :
+                      application/json: ""
+                uri:
+                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MainFunction.Arn}/invocations
+                passthroughBehavior: when_no_match
+                httpMethod: POST
+                type: aws
+        definitions:
+          Empty:
+            type: "object"
+            title: "Empty Schema"
+
+  ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule
+      Name: 'start-meetbot-schedule'
+      ScheduleExpression: 'cron(0 9 ? * MON,TUE,WED,THU,FRI *)'
+      State: DISABLED
+      Targets:
+      - Arn: !GetAtt 'MainFunction.Arn'
+        Id: TargetFunctionV1
+        Input: '{"meeting": "start"}'
+
+  MainFunctionS3CreateObjectPermission: 
+    Type: "AWS::Lambda::Permission"
+    Properties: 
+      Action: "lambda:invokeFunction"
+      SourceAccount: 
+        Ref: "AWS::AccountId"
+      FunctionName: 
+        Ref: MainFunction
+      Principal: "s3.amazonaws.com"
+      SourceArn: 
+        "Fn::GetAtt": "SettingS3Bucket.Arn"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'MainFunction'
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'ScheduledRule.Arn'
+
+  SettingS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: 'meetbot-settings'
+      CorsConfiguration:
+        CorsRules:
+          - 
+            AllowedHeaders: ['*']
+            AllowedOrigins: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE]
+
+  FrontS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: 'meetbot-front'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  FrontS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: 
+        Ref: FrontS3Bucket
+      PolicyDocument: 
+        Statement: 
+          - 
+            Sid: "PublicReadForGetBucketObjects"
+            Action: "s3:GetObject"
+            Effect: "Allow"
+            Resource: "arn:aws:s3:::meetbot-front/*"
+            Principal: "*"
+            Condition: 
+              IpAddress: 
+                aws:SourceIp: 
+                  - "111.222.333.444/32"
+
+  MeetBotMessageDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: 'meetbot_message'
+      AttributeDefinitions: 
+        - 
+          AttributeName: "user"
+          AttributeType: "S"
+        - 
+          AttributeName: "question_no"
+          AttributeType: "N"
+      KeySchema: 
+        - 
+          AttributeName: "user"
+          KeyType: "HASH"
+        - 
+          AttributeName: "question_no"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+
+  MeetBotMessageSequenceDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: 'meetbot_message_sequence'
+      AttributeDefinitions: 
+        - 
+          AttributeName: "user"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "user"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+
+  MeetBotIamRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "AWSLambdaMicroserviceExecutionRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Sid: "VisualEditor0"
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:PutItem"
+                  - "dynamodb:DeleteItem"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Scan"
+                  - "dynamodb:Query"
+                  - "dynamodb:UpdateItem"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
+        -
+          PolicyName: "AmazonS3ReadOnlyAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Sid: "VisualEditor0"
+                Effect: "Allow"
+                Action:
+                  - "s3:Get*"
+                  - "s3:List*"
+                Resource: "*"
+        -
+          PolicyName: "AWSLambdaBasicExecutionRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "logs:CreateLogGroup"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/MeetBot:*"
+
