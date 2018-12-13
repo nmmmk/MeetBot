@@ -67,7 +67,7 @@ export function getUserListOfChannel(channels, groups, users) {
   // ユーザー一覧
   users.data.members.forEach((user) => {
     if (!user.is_bot) {
-      userAll[user.id] = user.name;
+      userAll[user.id] = user.profile.display_name;
     }
   });
 
